@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bionik Web Designs</title>
+<meta name="description" content="Bionik Web Designs — websites, smart NFC tags, and trackable QR codes.">
+<meta name="theme-color" content="#0b0d12">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230b0d12'/%3E%3Ctext x='32' y='44' font-family='Arial,sans-serif' font-size='34' font-weight='700' fill='%2389f0c8' text-anchor='middle'%3EB%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root { --bg: #0b0d12; --ink: #eef1f6; --muted: #98a0ad; --line: #232836; --accent: #89f0c8; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: "Space Grotesk", system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: grid; grid-template-rows: 1fr auto; min-height: 100vh; overflow-x: hidden;
+  }
+  /* Concentric rings: the NFC signal, as the backdrop */
+  .rings { position: fixed; inset: 0; pointer-events: none; display: grid; place-items: center; }
+  .rings span {
+    position: absolute; border: 1px solid var(--line); border-radius: 50%;
+    width: var(--s); height: var(--s); animation: pulse 6s ease-out infinite; animation-delay: var(--d); opacity: 0;
+  }
+  @keyframes pulse { 0% { transform: scale(.6); opacity: 0; } 20% { opacity: 1; } 100% { transform: scale(1.25); opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) { .rings span { animation: none; opacity: .6; } }
+
+  main { position: relative; display: grid; place-items: center; padding: 48px 20px; text-align: center; }
+  .mark {
+    width: 64px; height: 64px; border-radius: 16px; display: grid; place-items: center; margin: 0 auto 28px;
+    background: linear-gradient(145deg, #12161f, #0b0d12); border: 1px solid var(--line);
+    font-weight: 700; font-size: 30px; color: var(--accent);
+  }
+  h1 { font-size: clamp(2.4rem, 7vw, 4.6rem); line-height: 1.02; letter-spacing: -.03em; margin: 0; font-weight: 700; }
+  h1 em { font-style: normal; color: var(--accent); }
+  p.lead { color: var(--muted); font-size: clamp(1.05rem, 2.2vw, 1.25rem); max-width: 34ch; margin: 22px auto 0; line-height: 1.5; }
+  ul.what { list-style: none; padding: 0; margin: 36px auto 0; display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+  ul.what li { border: 1px solid var(--line); border-radius: 999px; padding: 8px 16px; font-size: .95rem; color: var(--ink); background: rgba(255,255,255,.02); }
+  .cta { display: inline-block; margin-top: 38px; color: var(--bg); background: var(--accent); text-decoration: none;
+    font-weight: 500; padding: 12px 22px; border-radius: 999px; transition: transform .15s ease; }
+  .cta:hover { transform: translateY(-1px); }
+  footer { position: relative; text-align: center; color: var(--muted); font-size: .85rem; padding: 20px 16px 28px; }
+</style>
+</head>
+<body>
+  <div class="rings" aria-hidden="true">
+    <span style="--s: 420px; --d: 0s"></span>
+    <span style="--s: 680px; --d: 2s"></span>
+    <span style="--s: 940px; --d: 4s"></span>
+  </div>
+
+  <main>
+    <div>
+      <div class="mark" aria-hidden="true">B</div>
+      <h1>Bionik<br><em>Web Designs</em></h1>
+      <p class="lead">Websites, smart NFC tags, and trackable QR codes that connect people to what you make.</p>
+      <ul class="what">
+        <li>Web design</li>
+        <li>NFC tags</li>
+        <li>Dynamic QR codes</li>
+        <li>Scan analytics</li>
+      </ul>
+      <!-- TODO: set the real contact address, then remove this comment -->
+      <a class="cta" href="mailto:hello@bionikwebdesigns.com">Get in touch</a>
+    </div>
+  </main>
+
+  <footer>© <span id="y">2026</span> Bionik Web Designs</footer>
+  <script>document.getElementById('y').textContent = new Date().getFullYear();</script>
+</body>
+</html>

@@ -1,0 +1,28 @@
+# go.bionikwebdesigns.com — Bionik Links
+
+Options -Indexes
+DirectoryIndex index.php
+
+# Never cache redirects or the admin, or taps won't be counted
+<IfModule LiteSpeed>
+    CacheDisable public /
+    CacheDisable private /
+</IfModule>
+
+RewriteEngine On
+
+# Force HTTPS
+RewriteCond %{HTTPS} off
+RewriteCond %{HTTP:X-Forwarded-Proto} !https
+RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
+
+# Keep the app code and any fallback data folder private
+RewriteRule ^app(/|$) - [F,L]
+
+# Everything that isn't a real static file goes to the front controller
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteRule ^ index.php [L,QSA]
+
+<FilesMatch "^\.|\.(md|sqlite|sqlite-wal|sqlite-shm|log)$">
+    Require all denied
+</FilesMatch>

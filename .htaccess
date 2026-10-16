@@ -1,0 +1,17 @@
+# bionikwebdesigns.com
+
+Options -Indexes
+DirectoryIndex index.html index.php
+
+RewriteEngine On
+
+# Force HTTPS
+RewriteCond %{HTTPS} off
+RewriteCond %{HTTP:X-Forwarded-Proto} !https
+RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
+
+# Hide the git folder and repo docs that the Git deploy places in public_html
+RewriteRule ^\.git(/|$) - [F,L]
+<FilesMatch "^(README\.md|\.gitignore|\.htaccess)$">
+    Require all denied
+</FilesMatch>

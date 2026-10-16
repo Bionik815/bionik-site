@@ -1,0 +1,8 @@
+# Local settings and data never go in the repo
+go/app/config.local.php
+go/app/data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+node_modules/
+.DS_Store
