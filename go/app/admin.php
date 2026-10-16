@@ -404,7 +404,7 @@ function page_dashboard(): void
             : ($l['url'] !== '' ? h(short_url($l['url'])) : '<span class="pill warn">not set up</span>');
         $rows .= '<tr' . ($retired || !(int) $l['active'] ? ' class="off"' : '') . '>
           <td class="pick"><input type="checkbox" name="slugs[]" value="' . h($l['slug']) . '" form="bulk-form" aria-label="Select ' . h($l['slug']) . '"></td>
-          <td><a class="slug" href="' . h(url('/admin/link/' . $l['slug'])) . '">' . h($l['slug']) . '</a>' . ((int) $l['active'] || $retired ? '' : ' <span class="pill">off</span>') . '</td>
+          <td><a class="slug" href="' . h(url('/admin/link/' . $l['slug'])) . '">' . h($l['slug']) . '</a>' . ((int) $l['active'] || $retired ? '' : ' <span class="pill">off</span>') . (is_protected($l) ? ' <span class="pill lock" title="Protected">locked</span>' : '') . '</td>
           <td>' . h($l['title']) . '<div class="dest">' . $dest . '</div></td>
           <td>' . h($l['client']) . '</td>
           <td class="n">' . (int) ($t['total'] ?? 0) . '</td>
@@ -469,11 +469,19 @@ $targetOpts = '';
           <label class="check inline"><input type="checkbox" data-select-all aria-label="Select all shown"> <span data-selected-count>0 selected</span></label>
           <select name="action" required>
             <option value="">Choose an action…</option>
+            <option value="client">Set client…</option>
+            <option value="rename">Rename tag IDs (find and replace)…</option>
+            <option value="protect">Protect</option>
+            <option value="unprotect">Unprotect</option>
             <option value="retire">Retire to…</option>
             <option value="restore">Restore from retired</option>
             <option value="delete">Delete permanently (link + scans)</option>
           </select>
-          <select name="retire_to" data-retire-target hidden>' . $targetOpts . '</select>
+          <select name="retire_to" data-retire-target data-for="retire" hidden>' . $targetOpts . '</select>
+          <input name="client" list="bulk-clients" placeholder="Client" data-for="client" hidden>
+          <datalist id="bulk-clients">' . implode('', array_map(fn($c) => '<option value="' . h($c) . '">', $clients)) . '</datalist>
+          <input name="find" placeholder="Find, e.g. bwd-bba-" data-for="rename" hidden>
+          <input name="replace" placeholder="Replace with, e.g. bwd-xyz-" data-for="rename" hidden>
           <button>Apply</button>
         </form>
         <div class="wrap"><table>
@@ -614,6 +622,7 @@ function page_link_detail(string $slug, ?array $link): void
         <dl class="facts">
           <dt>Destination</dt><dd>' . ($link['url'] !== '' ? '<a href="' . h($link['url']) . '" target="_blank" rel="noopener">' . h($link['url']) . '</a>' : 'Not set up yet — scans show the tag number page') . '</dd>
           <dt>Client</dt><dd>' . h($link['client'] ?: '—') . '</dd>
+          <dt>Protection</dt><dd>' . (is_protected($link) ? '<span class="pill lock">locked</span> Protected against changes' : 'Not protected') . '</dd>
           <dt>Status</dt><dd>' . (is_retired($link) ? '<span class="pill retired">Retired</span> ' . h(local_time((int) $link['retired_at'], 'M j, Y')) : ((int) $link['active'] ? 'Active' : 'Off — scans show a "turned off" page')) . '</dd>
           <dt>UTM tags</dt><dd>' . ((int) $link['utm'] ? 'Added to the destination' : 'No') . '</dd>
           ' . ($link['notes'] !== '' ? '<dt>Notes</dt><dd>' . nl2br(h($link['notes'])) . '</dd>' : '') . '
@@ -623,7 +632,8 @@ function page_link_detail(string $slug, ?array $link): void
         : '<p class="flash warn">No link exists for this tag, so scans show an "isn\'t registered" page. <a href="' . h(url('/admin/new') . '?slug=' . rawurlencode($slug)) . '">Create it</a>.</p>';
 
     $retirePanel = '';
-    if ($link) {
+    $isLocked = $link && is_protected($link);
+    if ($link && !$isLocked) {
         $targetOpts = '';
         foreach (retire_targets() as $tg) {
             $targetOpts .= '<option value="' . h($tg['url']) . '"' . ($tg['url'] === ($link['retire_to'] ?? '') ? ' selected' : '') . '>' . h($tg['name']) . ' — ' . h(short_url($tg['url'])) . '</option>';
@@ -648,7 +658,9 @@ function page_link_detail(string $slug, ?array $link): void
                 </form></section>';
     }
 
-    $danger = '<section class="card danger"><h2>Maintenance</h2>
+    $danger = $isLocked
+        ? '<section class="card locked-card"><h2>Protected</h2><p class="muted">This link is locked: no edits, renames, retiring, clearing, or deleting. Its scans still count. To change it, open <a href="' . h(url('/admin/link/' . $slug . '/edit')) . '">Edit</a>, untick Protected, and save.</p></section>'
+        : '<section class="card danger"><h2>Maintenance</h2>
         <form method="post" action="' . h(url('/admin/link/' . $slug . '/clear')) . '" data-confirm="Delete all ' . $total . ' scans recorded for ' . h($slug) . '? This can\'t be undone.">' . csrf_field() . '<button>Clear scan history</button> <span class="muted">Use after testing a tag.</span></form>'
         . ($link ? '<form method="post" action="' . h(url('/admin/link/' . $slug . '/delete')) . '" data-confirm="Permanently delete ' . h($slug) . ' and all ' . $total . ' of its scans? This can\'t be undone. Use Retire to keep history.">' . csrf_field() . '<button class="danger-btn">Delete permanently</button> <span class="muted">Removes the link and its whole scan history. For setup and testing; retire real tags instead.</span></form>' : '')
         . '</section>';
@@ -708,35 +720,51 @@ function valid_destination(string $url): bool
 function page_link_form(?array $link, bool $post): void
 {
     $editing = $link !== null;
-    $v = $link ?? ['slug' => strtolower((string) ($_GET['slug'] ?? '')), 'title' => '', 'url' => '', 'client' => '', 'notes' => '', 'utm' => 0, 'active' => 1];
+    $locked = $editing && is_protected($link);
+    $v = $link ?? ['slug' => strtolower((string) ($_GET['slug'] ?? '')), 'title' => '', 'url' => '', 'client' => '', 'notes' => '', 'utm' => 0, 'active' => 1, 'protected' => 0];
+    $scans = $editing ? scan_count($link['slug']) : 0;
     $error = '';
 
-    if ($post) {
-        $v = link_input($link);
-        if ($editing) {
-            $v['slug'] = $link['slug']; // the slug is printed on tags; never change it
+    if ($post && $locked) {
+        // A protected link only accepts switching protection off
+        if (!isset($_POST['protected'])) {
+            db()->prepare('UPDATE links SET protected = 0, updated_at = ? WHERE slug = ?')->execute([time(), $link['slug']]);
+            flash('Protection removed from ' . $link['slug'] . '. It can be edited again.');
         }
+        send_redirect(url('/admin/link/' . $link['slug'] . '/edit'));
+    }
+
+    if ($post) {
+        $v = link_input($link) + ['protected' => isset($_POST['protected']) ? 1 : 0];
+        $renaming = $editing && $v['slug'] !== $link['slug'];
         if (!valid_slug($v['slug'])) {
             $error = 'Tag ID: letters, numbers, - or _, up to 64 characters.';
         } elseif (in_array($v['slug'], ['admin', 'assets', 'app'], true)) {
             $error = 'That tag ID is reserved.';
         } elseif (!valid_destination($v['url'])) {
             $error = 'Destination must be a full http:// or https:// URL, or left blank.';
-        } elseif (!$editing && find_link($v['slug'])) {
-            $error = 'A link with that tag ID already exists.';
+        } elseif ((!$editing || $renaming) && find_link($v['slug'])) {
+            $error = 'A link with tag ID ' . $v['slug'] . ' already exists.';
+        } elseif ($renaming && $scans > 0 && !isset($_POST['confirm_rename'])) {
+            $error = $link['slug'] . ' has been scanned ' . $scans . ' time' . ($scans === 1 ? '' : 's') . ', so it may already be written to a sticker or printed as a QR code. Tick the confirmation box to rename it anyway.';
         } else {
             $now = time();
             if ($editing) {
-                db()->prepare('UPDATE links SET title=?, url=?, client=?, notes=?, utm=?, active=?, updated_at=? WHERE slug=?')
-                    ->execute([$v['title'], $v['url'], $v['client'], $v['notes'], $v['utm'], $v['active'], $now, $v['slug']]);
-                flash('Saved. Scans of ' . $v['slug'] . ' now go to the new destination.');
+                if ($renaming && ($err = rename_link($link['slug'], $v['slug'])) !== '') {
+                    $error = $err;
+                } else {
+                    db()->prepare('UPDATE links SET title=?, url=?, client=?, notes=?, utm=?, active=?, protected=?, updated_at=? WHERE slug=?')
+                        ->execute([$v['title'], $v['url'], $v['client'], $v['notes'], $v['utm'], $v['active'], $v['protected'], $now, $v['slug']]);
+                    flash($renaming ? 'Renamed ' . $link['slug'] . ' to ' . $v['slug'] . ' and saved.' : 'Saved.');
+                    send_redirect(url('/admin/link/' . $v['slug']));
+                }
             } else {
-                db()->prepare('INSERT INTO links (slug, title, url, client, notes, utm, active, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)')
-                    ->execute([$v['slug'], $v['title'], $v['url'], $v['client'], $v['notes'], $v['utm'], $v['active'], $now, $now]);
+                db()->prepare('INSERT INTO links (slug, title, url, client, notes, utm, active, protected, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
+                    ->execute([$v['slug'], $v['title'], $v['url'], $v['client'], $v['notes'], $v['utm'], $v['active'], $v['protected'], $now, $now]);
                 db()->prepare('UPDATE scans SET known = 1 WHERE slug = ?')->execute([$v['slug']]);
                 flash('Link ' . $v['slug'] . ' created.');
+                send_redirect(url('/admin/link/' . $v['slug']));
             }
-            send_redirect(url('/admin/link/' . $v['slug']));
         }
     }
 
@@ -747,22 +775,35 @@ function page_link_form(?array $link, bool $post): void
     }
     $dl .= '</datalist>';
 
+    $dis = $locked ? ' disabled' : '';
+    $slugHelp = !$editing
+        ? 'Becomes ' . h(public_base()) . '/<em>tag-id</em>'
+        : ($scans > 0
+            ? '<strong>Scanned ' . $scans . ' time' . ($scans === 1 ? '' : 's') . '.</strong> Renaming moves its history, but any sticker or printed QR code with the old ID will stop working.'
+            : 'Not scanned yet, so it is safe to rename. Its history moves with it.');
+    $confirm = ($editing && $scans > 0 && !$locked)
+        ? '<label class="check confirm-rename" hidden><input type="checkbox" name="confirm_rename"> I understand stickers and QR codes printed with <code>' . h($link['slug']) . '</code> will stop working</label>'
+        : '';
+
     layout($editing ? 'Edit ' . $link['slug'] : 'New link', '<section class="card narrow">
       <h1>' . ($editing ? 'Edit <span class="slug big">' . h($link['slug']) . '</span>' : 'New link') . '</h1>
+      ' . ($locked ? '<div class="flash warn"><strong>Protected.</strong> This link is locked against changes. Untick Protected and save to edit it.</div>' : '') . '
       ' . ($error ? '<div class="flash err">' . h($error) . '</div>' : '') . '
-      <form method="post">' . csrf_field() . '
+      <form method="post"' . ($editing ? ' data-original-slug="' . h($link['slug']) . '"' : '') . '>' . csrf_field() . '
         <label>Tag ID
-          <input name="slug" required pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,63}" value="' . h($v['slug']) . '"' . ($editing ? ' readonly' : ' placeholder="e.g. 001 or acme-ig"') . '>
-          <small>' . ($editing ? 'Fixed, because it\'s written on the tag. Change the destination instead.' : 'Becomes ' . h(public_base()) . '/<em>tag-id</em>') . '</small>
+          <input name="slug" required pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,63}" value="' . h($v['slug']) . '"' . ($editing ? '' : ' placeholder="e.g. 001 or bwd-bba-1"') . $dis . '>
+          <small>' . $slugHelp . '</small>
         </label>
-        <label>Destination URL <input name="url" type="url" value="' . h($v['url']) . '" placeholder="https://instagram.com/handle">
+        ' . $confirm . '
+        <label>Destination URL <input name="url" type="url" value="' . h($v['url']) . '" placeholder="https://instagram.com/handle"' . $dis . '>
           <small>Leave blank and the tag shows a "Tag ' . h($v['slug'] ?: '###') . ' isn\'t set up yet" page.</small></label>
-        <label>Label <input name="title" value="' . h($v['title']) . '" placeholder="Booth table sticker"></label>
-        <label>Client <input name="client" list="clients" value="' . h($v['client']) . '" placeholder="client-a">' . $dl . '</label>
-        <label>Notes <textarea name="notes" rows="3">' . h($v['notes']) . '</textarea></label>
-        <label class="check"><input type="checkbox" name="utm"' . ((int) $v['utm'] ? ' checked' : '') . '> Add UTM tags (for store and website analytics)</label>
-        <label class="check"><input type="checkbox" name="active"' . ((int) $v['active'] ? ' checked' : '') . '> Active</label>
-        <div class="actions"><button class="primary">' . ($editing ? 'Save' : 'Create link') . '</button>
+        <label>Label <input name="title" value="' . h($v['title']) . '" placeholder="Booth table sticker"' . $dis . '></label>
+        <label>Client <input name="client" list="clients" value="' . h($v['client']) . '" placeholder="client-a"' . $dis . '>' . $dl . '</label>
+        <label>Notes <textarea name="notes" rows="3"' . $dis . '>' . h($v['notes']) . '</textarea></label>
+        <label class="check"><input type="checkbox" name="utm"' . ((int) $v['utm'] ? ' checked' : '') . $dis . '> Add UTM tags (for store and website analytics)</label>
+        <label class="check"><input type="checkbox" name="active"' . ((int) $v['active'] ? ' checked' : '') . $dis . '> Active</label>
+        <label class="check protect"><input type="checkbox" name="protected"' . ((int) ($v['protected'] ?? 0) ? ' checked' : '') . '> <span><strong>Protected</strong> — lock this link so it can\'t be edited, renamed, retired, or deleted by mistake</span></label>
+        <div class="actions"><button class="primary">' . ($locked ? 'Save protection' : ($editing ? 'Save' : 'Create link')) . '</button>
         <a href="' . h($editing ? url('/admin/link/' . $link['slug']) : url('/admin')) . '">Cancel</a></div>
       </form></section>');
 }
@@ -824,6 +865,11 @@ function page_bulk(bool $post): void
 
 function clear_scans(string $slug): never
 {
+    $link = find_link($slug);
+    if ($link && is_protected($link)) {
+        flash($slug . ' is protected. Unprotect it in Edit first.', 'err');
+        send_redirect(url('/admin/link/' . $slug));
+    }
     db()->prepare('DELETE FROM scans WHERE slug = ?')->execute([$slug]);
     flash('Scan history for ' . $slug . ' cleared.');
     send_redirect(url('/admin/link/' . $slug));
@@ -855,6 +901,30 @@ function clean_slugs(array $slugs): array
     return array_values(array_unique(array_filter(array_map(fn($x) => strtolower((string) $x), $slugs), 'valid_slug')));
 }
 
+/** Splits slugs into [editable, protected]. */
+function split_protected(array $slugs): array
+{
+    $ok = []; $locked = [];
+    foreach (clean_slugs($slugs) as $slug) {
+        $l = find_link($slug);
+        if ($l && is_protected($l)) {
+            $locked[] = $slug;
+        } else {
+            $ok[] = $slug;
+        }
+    }
+    return [$ok, $locked];
+}
+
+function skipped_note(array $locked): string
+{
+    if (!$locked) {
+        return '';
+    }
+    $list = count($locked) > 6 ? implode(', ', array_slice($locked, 0, 6)) . '…' : implode(', ', $locked);
+    return ' Skipped ' . count($locked) . ' protected: ' . $list . '.';
+}
+
 function retire_links(array $slugs, string $to, string $note, string $back): never
 {
     $allowed = array_column(retire_targets(), 'url');
@@ -863,32 +933,34 @@ function retire_links(array $slugs, string $to, string $note, string $back): nev
         send_redirect($back);
     }
     $note = mb_substr(trim($note), 0, 200);
+    [$ok, $locked] = split_protected($slugs);
     $st = db()->prepare('UPDATE links SET retired_at = COALESCE(retired_at, ?), retire_to = ?, retire_note = ?, updated_at = ? WHERE slug = ?');
     $n = 0;
-    foreach (clean_slugs($slugs) as $slug) {
+    foreach ($ok as $slug) {
         $st->execute([time(), $to, $note, time(), $slug]);
         $n += $st->rowCount();
     }
-    flash($n === 1 ? 'Retired. Scans now go to ' . short_url($to) . '.' : "Retired $n links. Scans now go to " . short_url($to) . '.');
+    flash(($n === 1 ? 'Retired 1 link.' : "Retired $n links.") . ($n ? ' Scans now go to ' . short_url($to) . '.' : '') . skipped_note($locked), $n ? 'ok' : 'err');
     send_redirect($back);
 }
 
 function restore_links(array $slugs, string $back): never
 {
+    [$ok, $locked] = split_protected($slugs);
     $st = db()->prepare("UPDATE links SET retired_at = NULL, retire_to = '', retire_note = '', updated_at = ? WHERE slug = ? AND retired_at IS NOT NULL");
     $n = 0;
-    foreach (clean_slugs($slugs) as $slug) {
+    foreach ($ok as $slug) {
         $st->execute([time(), $slug]);
         $n += $st->rowCount();
     }
-    flash($n === 1 ? 'Restored. Scans go to its own destination again.' : "Restored $n links.");
+    flash(($n === 1 ? 'Restored 1 link. Scans go to its own destination again.' : "Restored $n links.") . skipped_note($locked), $n || !$locked ? 'ok' : 'err');
     send_redirect($back);
 }
 
 /** Permanent: removes the links and every scan recorded for them. */
 function delete_links(array $slugs, string $back): never
 {
-    $slugs = clean_slugs($slugs);
+    [$slugs, $locked] = split_protected($slugs);
     $delLink = db()->prepare('DELETE FROM links WHERE slug = ?');
     $delScans = db()->prepare('DELETE FROM scans WHERE slug = ?');
     $links = 0; $scans = 0;
@@ -900,7 +972,72 @@ function delete_links(array $slugs, string $back): never
         $links += $delLink->rowCount();
     }
     db()->commit();
-    flash("Deleted $links link" . ($links === 1 ? '' : 's') . " and $scans scan" . ($scans === 1 ? '' : 's') . '.');
+    flash("Deleted $links link" . ($links === 1 ? '' : 's') . " and $scans scan" . ($scans === 1 ? '' : 's') . '.' . skipped_note($locked), $links || !$locked ? 'ok' : 'err');
+    if ($links === 0 && $locked && count($locked) === 1) {
+        send_redirect(url('/admin/link/' . $locked[0]));
+    }
+    send_redirect($back);
+}
+
+function set_client_links(array $slugs, string $client, string $back): never
+{
+    $client = mb_substr(trim($client), 0, 80);
+    [$ok, $locked] = split_protected($slugs);
+    $st = db()->prepare('UPDATE links SET client = ?, updated_at = ? WHERE slug = ?');
+    foreach ($ok as $slug) {
+        $st->execute([$client, time(), $slug]);
+    }
+    flash('Set client to "' . ($client === '' ? '(none)' : $client) . '" on ' . count($ok) . ' link' . (count($ok) === 1 ? '' : 's') . '.' . skipped_note($locked), $ok ? 'ok' : 'err');
+    send_redirect($back);
+}
+
+/**
+ * Find/replace inside tag IDs, e.g. bwd-bba- → bwd-xyz-. Tags that have
+ * already been scanned are skipped: rename those one at a time from Edit,
+ * where the warning about printed stickers is shown.
+ */
+function rename_links(array $slugs, string $find, string $replace, string $back): never
+{
+    $find = strtolower(trim($find));
+    $replace = strtolower(trim($replace));
+    if ($find === '') {
+        flash('Enter the text to find in the tag IDs.', 'err');
+        send_redirect($back);
+    }
+    [$ok, $locked] = split_protected($slugs);
+    $done = []; $scanned = []; $errors = [];
+    foreach ($ok as $slug) {
+        if (!str_contains($slug, $find)) {
+            continue;
+        }
+        if (scan_count($slug) > 0) {
+            $scanned[] = $slug;
+            continue;
+        }
+        $to = preg_replace('/' . preg_quote($find, '/') . '/', $replace, $slug, 1);
+        $err = rename_link($slug, $to);
+        $err === '' ? $done[] = "$slug → $to" : $errors[] = $err;
+    }
+    $msg = 'Renamed ' . count($done) . ' tag' . (count($done) === 1 ? '' : 's') . '.';
+    if ($scanned) {
+        $msg .= ' Skipped ' . count($scanned) . ' already scanned (rename those from Edit): ' . implode(', ', array_slice($scanned, 0, 6)) . (count($scanned) > 6 ? '…' : '') . '.';
+    }
+    if ($errors) {
+        $msg .= ' ' . implode(' ', array_slice($errors, 0, 3));
+    }
+    flash($msg . skipped_note($locked), $done ? 'ok' : 'err');
+    send_redirect($back);
+}
+
+function protect_links(array $slugs, int $on, string $back): never
+{
+    $st = db()->prepare('UPDATE links SET protected = ?, updated_at = ? WHERE slug = ?');
+    $n = 0;
+    foreach (clean_slugs($slugs) as $slug) {
+        $st->execute([$on, time(), $slug]);
+        $n += $st->rowCount();
+    }
+    flash(($on ? 'Protected ' : 'Unprotected ') . $n . ' link' . ($n === 1 ? '' : 's') . '.');
     send_redirect($back);
 }
 
@@ -913,6 +1050,10 @@ function bulk_action(): never
         send_redirect($back);
     }
     match ((string) ($_POST['action'] ?? '')) {
+        'client'    => set_client_links($slugs, (string) ($_POST['client'] ?? ''), $back),
+        'rename'    => rename_links($slugs, (string) ($_POST['find'] ?? ''), (string) ($_POST['replace'] ?? ''), $back),
+        'protect'   => protect_links($slugs, 1, $back),
+        'unprotect' => protect_links($slugs, 0, $back),
         'retire'  => retire_links($slugs, (string) ($_POST['retire_to'] ?? ''), '', $back),
         'restore' => restore_links($slugs, $back),
         'delete'  => delete_links($slugs, $back),
@@ -1000,7 +1141,7 @@ function export_csv(): never
         exit;
     }
 
-    fputcsv($out, ['tag', 'client', 'label', 'destination', 'status', 'scans', 'nfc', 'qr', 'ios', 'android', 'unique_visitor_days', 'last_scan_local']);
+    fputcsv($out, ['tag', 'client', 'label', 'destination', 'status', 'protected', 'scans', 'nfc', 'qr', 'ios', 'android', 'unique_visitor_days', 'last_scan_local']);
     $totals = scan_totals($since);
     $slugs = array_unique(array_merge(array_keys($links), array_keys($totals)));
     natsort($slugs);
@@ -1011,7 +1152,7 @@ function export_csv(): never
             continue;
         }
         fputcsv($out, [
-            $slug, $l['client'] ?? '', $l['title'] ?? '(unknown tag)', $l ? (is_retired($l) ? $l['retire_to'] : $l['url']) : '', link_status($l),
+            $slug, $l['client'] ?? '', $l['title'] ?? '(unknown tag)', $l ? (is_retired($l) ? $l['retire_to'] : $l['url']) : '', link_status($l), $l && is_protected($l) ? 'yes' : '',
             (int) ($t['total'] ?? 0), (int) ($t['nfc'] ?? 0), (int) ($t['qr'] ?? 0), (int) ($t['ios'] ?? 0), (int) ($t['android'] ?? 0),
             (int) ($t['uniq'] ?? 0), isset($t['last']) ? local_time((int) $t['last'], 'Y-m-d H:i') : '',
         ]);

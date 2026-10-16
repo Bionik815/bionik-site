@@ -92,6 +92,7 @@
     var count = bulk.querySelector('[data-selected-count]');
     var action = bulk.querySelector('select[name="action"]');
     var target = bulk.querySelector('[data-retire-target]');
+    var extras = Array.prototype.slice.call(bulk.querySelectorAll('[data-for]'));
     var picked = function () { return boxes.filter(function (b) { return b.checked; }); };
     var refresh = function () {
       var n = picked().length;
@@ -105,13 +106,26 @@
       boxes.forEach(function (b) { b.checked = all.checked; });
       refresh();
     });
-    action.addEventListener('change', function () { target.hidden = action.value !== 'retire'; });
+    var showExtras = function () {
+      extras.forEach(function (el) {
+        var on = el.getAttribute('data-for') === action.value;
+        el.hidden = !on;
+        if (el.name === 'find') el.required = on;
+      });
+    };
+    action.addEventListener('change', showExtras);
+    showExtras();
     bulk.addEventListener('submit', function (e) {
       var sel = picked();
       if (!sel.length) { e.preventDefault(); window.alert('Select at least one link first.'); return; }
       var names = sel.map(function (b) { return b.value; });
       var list = names.length > 8 ? names.slice(0, 8).join(', ') + ' and ' + (names.length - 8) + ' more' : names.join(', ');
+      var val = function (n) { var el = bulk.querySelector('[name="' + n + '"]'); return el ? el.value : ''; };
       var msg = {
+        client: 'Set client to "' + (val('client') || '(none)') + '" on ' + list + '?',
+        rename: 'In ' + list + ', replace "' + val('find') + '" with "' + val('replace') + '"? Tags that have already been scanned will be skipped.',
+        protect: 'Protect ' + list + '? They will be locked against edits, renames, retiring, and deleting.',
+        unprotect: 'Unprotect ' + list + '?',
         retire: 'Retire ' + list + '? Scans will go to ' + (target.options[target.selectedIndex] || {}).text + '.',
         restore: 'Restore ' + list + ' from retired?',
         'delete': 'PERMANENTLY delete ' + list + ' and all their scan history? This cannot be undone.'
@@ -119,6 +133,24 @@
       if (msg && !window.confirm(msg)) e.preventDefault();
     });
     refresh();
+  }
+
+  /* ---------------------------------------------------------------- rename warning on Edit */
+
+  var editForm = document.querySelector('form[data-original-slug]');
+  if (editForm) {
+    var original = editForm.getAttribute('data-original-slug');
+    var slugInput = editForm.querySelector('input[name="slug"]');
+    var confirmBox = editForm.querySelector('.confirm-rename');
+    if (slugInput && confirmBox) {
+      var check = function () {
+        var changed = slugInput.value.trim().toLowerCase() !== original;
+        confirmBox.hidden = !changed;
+        confirmBox.querySelector('input').required = changed;
+      };
+      slugInput.addEventListener('input', check);
+      check();
+    }
   }
 
   if (typeof qrcode !== 'function') return;

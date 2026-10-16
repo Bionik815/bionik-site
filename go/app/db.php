@@ -86,6 +86,54 @@ function migrate(PDO $pdo): void
             PRAGMA user_version = 2;
         ");
     }
+    if ($version < 3) {
+        // Protected links can't be edited, renamed, retired, or deleted until unprotected
+        $pdo->exec("
+            ALTER TABLE links ADD COLUMN protected INTEGER NOT NULL DEFAULT 0;
+            PRAGMA user_version = 3;
+        ");
+    }
+}
+
+function is_protected(array $link): bool
+{
+    return !empty($link['protected']);
+}
+
+/**
+ * Rename a tag ID and move its scan history with it.
+ * Returns an error message, or '' on success.
+ */
+function rename_link(string $from, string $to): string
+{
+    $to = strtolower(trim($to));
+    if ($to === $from) {
+        return '';
+    }
+    if (!valid_slug($to)) {
+        return 'Tag ID "' . $to . '": letters, numbers, - or _, up to 64 characters.';
+    }
+    if (in_array($to, ['admin', 'assets', 'app'], true)) {
+        return 'Tag ID "' . $to . '" is reserved.';
+    }
+    if (find_link($to)) {
+        return 'Tag ID "' . $to . '" is already in use.';
+    }
+    $pdo = db();
+    $pdo->beginTransaction();
+    $pdo->prepare('UPDATE links SET slug = ?, updated_at = ? WHERE slug = ?')->execute([$to, time(), $from]);
+    $pdo->prepare('UPDATE scans SET slug = ? WHERE slug = ?')->execute([$to, $from]);
+    // Scans already recorded under the new ID (as an unknown tag) now belong to this link
+    $pdo->prepare('UPDATE scans SET known = 1 WHERE slug = ?')->execute([$to]);
+    $pdo->commit();
+    return '';
+}
+
+function scan_count(string $slug): int
+{
+    $st = db()->prepare('SELECT COUNT(*) FROM scans WHERE slug = ?');
+    $st->execute([$slug]);
+    return (int) $st->fetchColumn();
 }
 
 /** Sites a retired link can send scans to, as [['name' => …, 'url' => …], …]. */

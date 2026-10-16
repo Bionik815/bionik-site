@@ -153,3 +153,12 @@ td.pick input { margin: 3px 0 0; }
 .danger-btn { color: var(--err-ink); border-color: var(--err-ink); }
 .retired-card { border-color: var(--muted); }
 .row-inline input:not([type=checkbox]) { flex: 1 1 200px; }
+
+/* Protection and rename */
+.pill.lock { border-color: var(--accent); color: var(--accent); font-size: .68rem; text-transform: uppercase; letter-spacing: .04em; }
+.locked-card { border-color: var(--accent); }
+label.check.protect { align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; }
+label.check.protect input { margin-top: 4px; }
+label.confirm-rename { padding: 8px 10px; border-radius: 8px; background: var(--warn); color: var(--warn-ink); }
+.bulkbar input[data-for] { flex: 0 1 190px; }
+input:disabled, textarea:disabled { opacity: .6; cursor: not-allowed; }
