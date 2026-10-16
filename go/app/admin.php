@@ -44,6 +44,8 @@ function admin_route(string $sub): void
         export_csv();
     } elseif ($sub === '/password') {
         page_password($post);
+    } elseif ($sub === '/qr') {
+        page_qr_sheet();
     } elseif (preg_match('#^/link/([a-z0-9][a-z0-9_-]{0,63})(/edit|/clear|/delete)?$#', $sub, $m)) {
         $link = find_link($m[1]);
         $action = $m[2] ?? '';
@@ -70,12 +72,16 @@ function not_found(): never
 
 /* ------------------------------------------------------------------ layout */
 
-function layout(string $title, string $body, bool $nav = true): void
+function layout(string $title, string $body, bool $nav = true, array $extraScripts = []): void
 {
     $app = h(cfg('app_name'));
     $css = h(url('/assets/admin.css'));
     $js  = h(url('/assets/admin.js'));
     $qr  = h(url('/assets/qrcode.js'));
+    $extra = '';
+    foreach ($extraScripts as $s) {
+        $extra .= '<script src="' . h(url('/assets/' . $s)) . '"></script>';
+    }
     $navHtml = '';
     if ($nav && is_logged_in()) {
         $navHtml = '<nav class="top">
@@ -84,6 +90,7 @@ function layout(string $title, string $body, bool $nav = true): void
               <a href="' . h(url('/admin')) . '">Links</a>
               <a href="' . h(url('/admin/new')) . '">New link</a>
               <a href="' . h(url('/admin/bulk')) . '">Bulk create</a>
+              <a href="' . h(url('/admin/qr')) . '">QR codes</a>
               <a href="' . h(url('/admin/password')) . '">Password</a>
               <form method="post" action="' . h(url('/admin/logout')) . '">' . csrf_field() . '<button class="link">Sign out</button></form>
             </div>
@@ -95,7 +102,7 @@ function layout(string $title, string $body, bool $nav = true): void
 <title>' . h($title) . ' · ' . $app . '</title>
 <link rel="stylesheet" href="' . $css . '">
 </head><body>' . $navHtml . '<main>' . flash_html() . $body . '</main>
-<script src="' . $qr . '"></script><script src="' . $js . '"></script>
+<script src="' . $qr . '"></script>' . $extra . '<script src="' . $js . '"></script>
 </body></html>';
 }
 
@@ -421,12 +428,106 @@ function page_dashboard(): void
           <input name="q" placeholder="Search links" value="' . h($search) . '">
           <button>Filter</button>
           <a class="button" href="' . h(url('/admin/export') . ($exportQs ? '?' . $exportQs : '')) . '">Download CSV</a>
+          <a class="button" href="' . h(url('/admin/qr') . ($client !== '' ? '?client=' . rawurlencode($client) : '')) . '">QR codes</a>
         </form>
         <div class="wrap"><table>
           <thead><tr><th>Tag</th><th>Label / destination</th><th>Client</th><th class="n">Scans</th><th class="n">NFC</th><th class="n">QR</th><th>Last scan</th></tr></thead>
           <tbody>' . $rows . '</tbody>
         </table></div>
       </section>' . $unknownHtml);
+}
+
+/* ------------------------------------------------------------------ QR sheet */
+
+function page_qr_sheet(): void
+{
+    $client = trim((string) ($_GET['client'] ?? ''));
+    $search = trim((string) ($_GET['q'] ?? ''));
+    $includeOff = isset($_GET['all']);
+
+    $links = db()->query('SELECT slug, title, client, notes, url, active FROM links ORDER BY slug')->fetchAll();
+    $clients = array_values(array_unique(array_filter(array_column($links, 'client'))));
+    sort($clients, SORT_NATURAL | SORT_FLAG_CASE);
+
+    $chosen = array_values(array_filter($links, function ($l) use ($client, $search, $includeOff) {
+        if (!$includeOff && (int) $l['active'] !== 1) {
+            return false;
+        }
+        if ($client !== '' && $l['client'] !== $client) {
+            return false;
+        }
+        if ($search !== '') {
+            return str_contains(strtolower($l['slug'] . ' ' . $l['title'] . ' ' . $l['client'] . ' ' . $l['notes']), strtolower($search));
+        }
+        return true;
+    }));
+    usort($chosen, fn($a, $b) => strnatcmp($a['slug'], $b['slug']));
+
+    $data = array_map(fn($l) => [
+        'slug'   => $l['slug'],
+        'title'  => $l['title'],
+        'client' => $l['client'],
+        'qr'     => qr_url($l['slug']),
+        'nfc'    => nfc_url($l['slug']),
+        'dest'   => $l['url'],
+    ], $chosen);
+    $json = json_encode($data, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_SLASHES);
+
+    $clientOpts = '<option value="">All clients</option>';
+    foreach ($clients as $c) {
+        $clientOpts .= '<option' . ($c === $client ? ' selected' : '') . '>' . h($c) . '</option>';
+    }
+    $zipName = 'bionik-qr-' . ($client !== '' ? preg_replace('/[^a-z0-9-]+/i', '-', strtolower($client)) : 'all') . '-' . local_time(time(), 'Y-m-d');
+
+    layout('QR codes', '
+      <div class="head no-print">
+        <h1>QR codes' . ($client !== '' ? ' · ' . h($client) : '') . '</h1>
+        <span class="muted">' . count($data) . ' code' . (count($data) === 1 ? '' : 's') . '</span>
+      </div>
+      <section class="card no-print">
+        <form class="filters" method="get">
+          <select name="client" onchange="this.form.submit()">' . $clientOpts . '</select>
+          <input name="q" placeholder="Filter by tag, label, or notes" value="' . h($search) . '">
+          <label class="check inline"><input type="checkbox" name="all"' . ($includeOff ? ' checked' : '') . ' onchange="this.form.submit()"> Include turned-off links</label>
+          <button>Filter</button>
+        </form>
+        <div class="sheet-tools">
+          <div class="tool">
+            <h2>Download ZIP</h2>
+            <p class="muted">One SVG and one PNG per code, plus a CSV listing each tag and URL.</p>
+            <div class="row-inline">
+              <label>PNG size
+                <select id="qr-png-size">
+                  <option value="1000">1000 × 1000</option>
+                  <option value="2000" selected>2000 × 2000</option>
+                  <option value="3000">3000 × 3000</option>
+                  <option value="4000">4000 × 4000</option>
+                </select>
+              </label>
+              <button type="button" class="primary" id="qr-zip"' . ($data ? '' : ' disabled') . '>Download ZIP</button>
+            </div>
+            <p class="muted small" id="qr-zip-status" aria-live="polite"></p>
+          </div>
+          <div class="tool">
+            <h2>Print sheet</h2>
+            <p class="muted">Labeled grid of every code below. Print or save as PDF.</p>
+            <div class="row-inline">
+              <label>Per row
+                <select id="qr-cols">
+                  <option value="2">2</option><option value="3">3</option>
+                  <option value="4" selected>4</option><option value="5">5</option><option value="6">6</option>
+                </select>
+              </label>
+              <label class="check inline"><input type="checkbox" id="qr-labels" checked> Labels</label>
+              <label class="check inline"><input type="checkbox" id="qr-urls"> URLs</label>
+              <button type="button" id="qr-print"' . ($data ? '' : ' disabled') . '>Print</button>
+            </div>
+          </div>
+        </div>
+      </section>
+      ' . ($data ? '' : '<section class="card"><p class="empty">No links match. <a href="' . h(url('/admin/bulk')) . '">Bulk create some</a>.</p></section>') . '
+      <div class="qr-grid" id="qr-grid" style="--cols:4"></div>
+      <script type="application/json" id="qr-sheet-data" data-zip-name="' . h($zipName) . '">' . $json . '</script>', true, ['jszip.min.js']);
 }
 
 function short_url(string $u): string
@@ -498,7 +599,7 @@ function page_link_detail(string $slug, ?array $link): void
           <h2>QR code</h2>
           <div class="qr" data-qr="' . h($qr) . '" data-name="' . h($slug) . '"></div>
           <div class="copy"><code>' . h($qr) . '</code><button type="button" data-copy="' . h($qr) . '">Copy</button></div>
-          <div class="actions"><button type="button" data-qr-download="svg">Download SVG</button><button type="button" data-qr-download="png">Download PNG</button></div>
+          <div class="actions"><button type="button" data-qr-download="svg">Download SVG</button><button type="button" data-qr-download="png">Download PNG (2000px)</button></div>
         </section>
       </div>
       <section class="card"><h2>Recent scans</h2><div class="wrap"><table>
