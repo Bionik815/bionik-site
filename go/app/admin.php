@@ -46,7 +46,11 @@ function admin_route(string $sub): void
         page_password($post);
     } elseif ($sub === '/qr') {
         page_qr_sheet();
-    } elseif (preg_match('#^/link/([a-z0-9][a-z0-9_-]{0,63})(/edit|/clear|/delete)?$#', $sub, $m)) {
+    } elseif ($sub === '/settings') {
+        page_settings($post);
+    } elseif ($sub === '/bulk-action' && $post) {
+        bulk_action();
+    } elseif (preg_match('#^/link/([a-z0-9][a-z0-9_-]{0,63})(/edit|/clear|/delete|/retire|/restore)?$#', $sub, $m)) {
         $link = find_link($m[1]);
         $action = $m[2] ?? '';
         if (!$link && $action !== '') {
@@ -55,7 +59,9 @@ function admin_route(string $sub): void
         match ($action) {
             '/edit'   => page_link_form($link, $post),
             '/clear'  => $post ? clear_scans($m[1]) : not_found(),
-            '/delete' => $post ? delete_link($link) : not_found(),
+            '/delete'  => $post ? delete_links([$link['slug']], url('/admin')) : not_found(),
+            '/retire'  => $post ? retire_links([$link['slug']], (string) ($_POST['retire_to'] ?? ''), (string) ($_POST['note'] ?? ''), url('/admin/link/' . $link['slug'])) : not_found(),
+            '/restore' => $post ? restore_links([$link['slug']], url('/admin/link/' . $link['slug'])) : not_found(),
             default   => page_link_detail($m[1], $link),
         };
     } else {
@@ -91,7 +97,7 @@ function layout(string $title, string $body, bool $nav = true, array $extraScrip
               <a href="' . h(url('/admin/new')) . '">New link</a>
               <a href="' . h(url('/admin/bulk')) . '">Bulk create</a>
               <a href="' . h(url('/admin/qr')) . '">QR codes</a>
-              <a href="' . h(url('/admin/password')) . '">Password</a>
+              <a href="' . h(url('/admin/settings')) . '">Settings</a>
               <form method="post" action="' . h(url('/admin/logout')) . '">' . csrf_field() . '<button class="link">Sign out</button></form>
             </div>
           </nav>';
@@ -345,13 +351,21 @@ function page_dashboard(): void
     $days = selected_period();
     $client = trim((string) ($_GET['client'] ?? ''));
     $search = trim((string) ($_GET['q'] ?? ''));
+    $view = in_array($_GET['view'] ?? '', ['retired', 'all'], true) ? $_GET['view'] : 'current';
     $since = period_since($days);
 
     $links = db()->query('SELECT * FROM links ORDER BY slug')->fetchAll();
     $clients = array_values(array_unique(array_filter(array_column($links, 'client'))));
     sort($clients, SORT_NATURAL | SORT_FLAG_CASE);
+    $retiredCount = count(array_filter($links, 'is_retired'));
 
-    $visible = array_filter($links, function ($l) use ($client, $search) {
+    $visible = array_filter($links, function ($l) use ($client, $search, $view) {
+        if ($view === 'current' && is_retired($l)) {
+            return false;
+        }
+        if ($view === 'retired' && !is_retired($l)) {
+            return false;
+        }
         if ($client !== '' && $l['client'] !== $client) {
             return false;
         }
@@ -371,7 +385,7 @@ function page_dashboard(): void
     }
     $unknown = array_filter($totals, fn($t) => (int) $t['known'] === 0);
 
-    $filterQs = ['client' => $client, 'q' => $search];
+    $filterQs = ['client' => $client, 'q' => $search, 'view' => $view === 'current' ? '' : $view];
     $exportQs = http_build_query(array_filter(['days' => $days, 'client' => $client]));
 
     $clientOpts = '<option value="">All clients</option>';
@@ -384,9 +398,14 @@ function page_dashboard(): void
     $rows = '';
     foreach ($visible as $l) {
         $t = $totals[$l['slug']] ?? [];
-        $rows .= '<tr' . ((int) $l['active'] ? '' : ' class="off"') . '>
-          <td><a class="slug" href="' . h(url('/admin/link/' . $l['slug'])) . '">' . h($l['slug']) . '</a>' . ((int) $l['active'] ? '' : ' <span class="pill">off</span>') . '</td>
-          <td>' . h($l['title']) . '<div class="dest">' . ($l['url'] !== '' ? h(short_url($l['url'])) : '<span class="pill warn">not set up</span>') . '</div></td>
+        $retired = is_retired($l);
+        $dest = $retired
+            ? '<span class="pill retired">retired</span> → ' . h(short_url($l['retire_to']))
+            : ($l['url'] !== '' ? h(short_url($l['url'])) : '<span class="pill warn">not set up</span>');
+        $rows .= '<tr' . ($retired || !(int) $l['active'] ? ' class="off"' : '') . '>
+          <td class="pick"><input type="checkbox" name="slugs[]" value="' . h($l['slug']) . '" form="bulk-form" aria-label="Select ' . h($l['slug']) . '"></td>
+          <td><a class="slug" href="' . h(url('/admin/link/' . $l['slug'])) . '">' . h($l['slug']) . '</a>' . ((int) $l['active'] || $retired ? '' : ' <span class="pill">off</span>') . '</td>
+          <td>' . h($l['title']) . '<div class="dest">' . $dest . '</div></td>
           <td>' . h($l['client']) . '</td>
           <td class="n">' . (int) ($t['total'] ?? 0) . '</td>
           <td class="n">' . (int) ($t['nfc'] ?? 0) . '</td>
@@ -395,7 +414,7 @@ function page_dashboard(): void
         </tr>';
     }
     if ($rows === '') {
-        $rows = '<tr><td colspan="7" class="empty">' . ($links ? 'No links match.' : 'No links yet. <a href="' . h(url('/admin/new')) . '">Create one</a> or <a href="' . h(url('/admin/bulk')) . '">bulk create 001–050</a>.') . '</td></tr>';
+        $rows = '<tr><td colspan="8" class="empty">' . ($links ? 'No links match.' : 'No links yet. <a href="' . h(url('/admin/new')) . '">Create one</a> or <a href="' . h(url('/admin/bulk')) . '">bulk create 001–050</a>.') . '</td></tr>';
     }
 
     $unknownHtml = '';
@@ -407,7 +426,19 @@ function page_dashboard(): void
         $unknownHtml = '<section class="card"><h2>Scans of unknown tags</h2><p class="muted">These tags were scanned but have no link, so visitors saw the "isn\'t registered" page with the tag number.</p><ul class="plain">' . $items . '</ul></section>';
     }
 
-    $chart = chart_svg(daily_series($days, ($client !== '' || $search !== '') ? array_column($visible, 'slug') : null), 'Daily scans');
+$targetOpts = '';
+    foreach (retire_targets() as $t) {
+        $targetOpts .= '<option value="' . h($t['url']) . '">' . h($t['name']) . '</option>';
+    }
+    $viewTabs = '<div class="tabs">';
+    foreach (['current' => 'Current', 'retired' => 'Retired (' . $retiredCount . ')', 'all' => 'All'] as $v => $label) {
+        $q = http_build_query(array_filter(['days' => $days, 'client' => $client, 'q' => $search, 'view' => $v === 'current' ? '' : $v]));
+        $viewTabs .= '<a class="' . ($v === $view ? 'on' : '') . '" href="?' . h($q) . '">' . h($label) . '</a>';
+    }
+    $viewTabs .= '</div>';
+    $back = $_SERVER['REQUEST_URI'] ?? url('/admin');
+
+    $chart = chart_svg(daily_series($days, ($client !== '' || $search !== '' || $view !== 'all') ? array_column($visible, 'slug') : null), 'Daily scans');
 
     layout('Links', '
       <div class="head">
@@ -424,14 +455,29 @@ function page_dashboard(): void
       <section class="card">
         <form class="filters" method="get">
           <input type="hidden" name="days" value="' . $days . '">
+          ' . ($view !== 'current' ? '<input type="hidden" name="view" value="' . h($view) . '">' : '') . '
           <select name="client" onchange="this.form.submit()">' . $clientOpts . '</select>
           <input name="q" placeholder="Search links" value="' . h($search) . '">
           <button>Filter</button>
           <a class="button" href="' . h(url('/admin/export') . ($exportQs ? '?' . $exportQs : '')) . '">Download CSV</a>
           <a class="button" href="' . h(url('/admin/qr') . ($client !== '' ? '?client=' . rawurlencode($client) : '')) . '">QR codes</a>
         </form>
+        <div class="viewbar">' . $viewTabs . '</div>
+        <form id="bulk-form" class="bulkbar" method="post" action="' . h(url('/admin/bulk-action')) . '" data-bulk>
+          ' . csrf_field() . '
+          <input type="hidden" name="back" value="' . h($back) . '">
+          <label class="check inline"><input type="checkbox" data-select-all aria-label="Select all shown"> <span data-selected-count>0 selected</span></label>
+          <select name="action" required>
+            <option value="">Choose an action…</option>
+            <option value="retire">Retire to…</option>
+            <option value="restore">Restore from retired</option>
+            <option value="delete">Delete permanently (link + scans)</option>
+          </select>
+          <select name="retire_to" data-retire-target hidden>' . $targetOpts . '</select>
+          <button>Apply</button>
+        </form>
         <div class="wrap"><table>
-          <thead><tr><th>Tag</th><th>Label / destination</th><th>Client</th><th class="n">Scans</th><th class="n">NFC</th><th class="n">QR</th><th>Last scan</th></tr></thead>
+          <thead><tr><th class="pick"></th><th>Tag</th><th>Label / destination</th><th>Client</th><th class="n">Scans</th><th class="n">NFC</th><th class="n">QR</th><th>Last scan</th></tr></thead>
           <tbody>' . $rows . '</tbody>
         </table></div>
       </section>' . $unknownHtml);
@@ -445,11 +491,14 @@ function page_qr_sheet(): void
     $search = trim((string) ($_GET['q'] ?? ''));
     $includeOff = isset($_GET['all']);
 
-    $links = db()->query('SELECT slug, title, client, notes, url, active FROM links ORDER BY slug')->fetchAll();
+    $links = db()->query('SELECT slug, title, client, notes, url, active, retired_at FROM links ORDER BY slug')->fetchAll();
     $clients = array_values(array_unique(array_filter(array_column($links, 'client'))));
     sort($clients, SORT_NATURAL | SORT_FLAG_CASE);
 
     $chosen = array_values(array_filter($links, function ($l) use ($client, $search, $includeOff) {
+        if (is_retired($l)) {
+            return false;
+        }
         if (!$includeOff && (int) $l['active'] !== 1) {
             return false;
         }
@@ -565,7 +614,7 @@ function page_link_detail(string $slug, ?array $link): void
         <dl class="facts">
           <dt>Destination</dt><dd>' . ($link['url'] !== '' ? '<a href="' . h($link['url']) . '" target="_blank" rel="noopener">' . h($link['url']) . '</a>' : 'Not set up yet — scans show the tag number page') . '</dd>
           <dt>Client</dt><dd>' . h($link['client'] ?: '—') . '</dd>
-          <dt>Status</dt><dd>' . ((int) $link['active'] ? 'Active' : 'Off — scans show a "turned off" page') . '</dd>
+          <dt>Status</dt><dd>' . (is_retired($link) ? '<span class="pill retired">Retired</span> ' . h(local_time((int) $link['retired_at'], 'M j, Y')) : ((int) $link['active'] ? 'Active' : 'Off — scans show a "turned off" page')) . '</dd>
           <dt>UTM tags</dt><dd>' . ((int) $link['utm'] ? 'Added to the destination' : 'No') . '</dd>
           ' . ($link['notes'] !== '' ? '<dt>Notes</dt><dd>' . nl2br(h($link['notes'])) . '</dd>' : '') . '
           <dt>Created</dt><dd>' . h(local_time((int) $link['created_at'])) . '</dd>
@@ -573,9 +622,35 @@ function page_link_detail(string $slug, ?array $link): void
         <div class="actions"><a class="button primary" href="' . h(url('/admin/link/' . $slug . '/edit')) . '">Edit link</a></div>'
         : '<p class="flash warn">No link exists for this tag, so scans show an "isn\'t registered" page. <a href="' . h(url('/admin/new') . '?slug=' . rawurlencode($slug)) . '">Create it</a>.</p>';
 
+    $retirePanel = '';
+    if ($link) {
+        $targetOpts = '';
+        foreach (retire_targets() as $tg) {
+            $targetOpts .= '<option value="' . h($tg['url']) . '"' . ($tg['url'] === ($link['retire_to'] ?? '') ? ' selected' : '') . '>' . h($tg['name']) . ' — ' . h(short_url($tg['url'])) . '</option>';
+        }
+        $retirePanel = is_retired($link)
+            ? '<section class="card retired-card"><h2>Retired</h2>
+                <p>Since ' . h(local_time((int) $link['retired_at'])) . ', scans go to <a href="' . h($link['retire_to']) . '" target="_blank" rel="noopener">' . h(short_url($link['retire_to'])) . '</a>.' . ($link['retire_note'] !== '' ? ' Reason: ' . h($link['retire_note']) : '') . '</p>
+                <form method="post" action="' . h(url('/admin/link/' . $slug . '/retire')) . '" class="row-inline">' . csrf_field() . '
+                  <label>Send scans to <select name="retire_to">' . $targetOpts . '</select></label>
+                  <input type="hidden" name="note" value="' . h($link['retire_note']) . '">
+                  <button>Change</button>
+                </form>
+                <form method="post" action="' . h(url('/admin/link/' . $slug . '/restore')) . '" class="actions">' . csrf_field() . '
+                  <button class="primary">Restore</button> <span class="muted">Back to ' . ($link['url'] !== '' ? h(short_url($link['url'])) : 'the "not set up" page') . '.</span>
+                </form></section>'
+            : '<section class="card"><h2>Retire this tag</h2>
+                <p class="muted">For a lost or broken tag, or a client who has left. Scans go to one of your sites, history is kept, and you can restore it later.</p>
+                <form method="post" action="' . h(url('/admin/link/' . $slug . '/retire')) . '" class="row-inline">' . csrf_field() . '
+                  <label>Send scans to <select name="retire_to">' . $targetOpts . '</select></label>
+                  <input name="note" placeholder="Reason (optional), e.g. lost, client left" maxlength="200">
+                  <button>Retire</button>
+                </form></section>';
+    }
+
     $danger = '<section class="card danger"><h2>Maintenance</h2>
         <form method="post" action="' . h(url('/admin/link/' . $slug . '/clear')) . '" data-confirm="Delete all ' . $total . ' scans recorded for ' . h($slug) . '? This can\'t be undone.">' . csrf_field() . '<button>Clear scan history</button> <span class="muted">Use after testing a tag.</span></form>'
-        . ($link ? '<form method="post" action="' . h(url('/admin/link/' . $slug . '/delete')) . '" data-confirm="Delete link ' . h($slug) . '? Tags pointing here will show an &quot;isn&#39;t registered&quot; page. Scan history is kept.">' . csrf_field() . '<button>Delete link</button> <span class="muted">Turning it off in Edit is usually better.</span></form>' : '')
+        . ($link ? '<form method="post" action="' . h(url('/admin/link/' . $slug . '/delete')) . '" data-confirm="Permanently delete ' . h($slug) . ' and all ' . $total . ' of its scans? This can\'t be undone. Use Retire to keep history.">' . csrf_field() . '<button class="danger-btn">Delete permanently</button> <span class="muted">Removes the link and its whole scan history. For setup and testing; retire real tags instead.</span></form>' : '')
         . '</section>';
 
     layout($slug, '
@@ -604,7 +679,7 @@ function page_link_detail(string $slug, ?array $link): void
       </div>
       <section class="card"><h2>Recent scans</h2><div class="wrap"><table>
         <thead><tr><th>Time (' . h(cfg('timezone')) . ')</th><th>Type</th><th>Device</th></tr></thead>
-        <tbody>' . $recent . '</tbody></table></div></section>' . $danger);
+        <tbody>' . $recent . '</tbody></table></div></section>' . $retirePanel . $danger);
 }
 
 /* ------------------------------------------------------------------ create / edit */
@@ -754,12 +829,144 @@ function clear_scans(string $slug): never
     send_redirect(url('/admin/link/' . $slug));
 }
 
-function delete_link(array $link): never
+function link_status(?array $l): string
 {
-    db()->prepare('DELETE FROM links WHERE slug = ?')->execute([$link['slug']]);
-    db()->prepare('UPDATE scans SET known = 0 WHERE slug = ?')->execute([$link['slug']]);
-    flash('Link ' . $link['slug'] . ' deleted. Its scan history is kept.');
-    send_redirect(url('/admin'));
+    if (!$l) {
+        return 'unknown';
+    }
+    if (is_retired($l)) {
+        return 'retired';
+    }
+    if (!(int) $l['active']) {
+        return 'off';
+    }
+    return $l['url'] === '' ? 'not set up' : 'active';
+}
+
+/** Only redirect back to a path inside this admin. */
+function safe_back(string $fallback): string
+{
+    $back = (string) ($_POST['back'] ?? '');
+    return str_starts_with($back, url('/admin')) && !str_contains($back, "\n") ? $back : $fallback;
+}
+
+function clean_slugs(array $slugs): array
+{
+    return array_values(array_unique(array_filter(array_map(fn($x) => strtolower((string) $x), $slugs), 'valid_slug')));
+}
+
+function retire_links(array $slugs, string $to, string $note, string $back): never
+{
+    $allowed = array_column(retire_targets(), 'url');
+    if (!in_array($to, $allowed, true)) {
+        flash('Pick one of the retire destinations from the list.', 'err');
+        send_redirect($back);
+    }
+    $note = mb_substr(trim($note), 0, 200);
+    $st = db()->prepare('UPDATE links SET retired_at = COALESCE(retired_at, ?), retire_to = ?, retire_note = ?, updated_at = ? WHERE slug = ?');
+    $n = 0;
+    foreach (clean_slugs($slugs) as $slug) {
+        $st->execute([time(), $to, $note, time(), $slug]);
+        $n += $st->rowCount();
+    }
+    flash($n === 1 ? 'Retired. Scans now go to ' . short_url($to) . '.' : "Retired $n links. Scans now go to " . short_url($to) . '.');
+    send_redirect($back);
+}
+
+function restore_links(array $slugs, string $back): never
+{
+    $st = db()->prepare("UPDATE links SET retired_at = NULL, retire_to = '', retire_note = '', updated_at = ? WHERE slug = ? AND retired_at IS NOT NULL");
+    $n = 0;
+    foreach (clean_slugs($slugs) as $slug) {
+        $st->execute([time(), $slug]);
+        $n += $st->rowCount();
+    }
+    flash($n === 1 ? 'Restored. Scans go to its own destination again.' : "Restored $n links.");
+    send_redirect($back);
+}
+
+/** Permanent: removes the links and every scan recorded for them. */
+function delete_links(array $slugs, string $back): never
+{
+    $slugs = clean_slugs($slugs);
+    $delLink = db()->prepare('DELETE FROM links WHERE slug = ?');
+    $delScans = db()->prepare('DELETE FROM scans WHERE slug = ?');
+    $links = 0; $scans = 0;
+    db()->beginTransaction();
+    foreach ($slugs as $slug) {
+        $delScans->execute([$slug]);
+        $scans += $delScans->rowCount();
+        $delLink->execute([$slug]);
+        $links += $delLink->rowCount();
+    }
+    db()->commit();
+    flash("Deleted $links link" . ($links === 1 ? '' : 's') . " and $scans scan" . ($scans === 1 ? '' : 's') . '.');
+    send_redirect($back);
+}
+
+function bulk_action(): never
+{
+    $back = safe_back(url('/admin'));
+    $slugs = (array) ($_POST['slugs'] ?? []);
+    if (!clean_slugs($slugs)) {
+        flash('Select at least one link first.', 'err');
+        send_redirect($back);
+    }
+    match ((string) ($_POST['action'] ?? '')) {
+        'retire'  => retire_links($slugs, (string) ($_POST['retire_to'] ?? ''), '', $back),
+        'restore' => restore_links($slugs, $back),
+        'delete'  => delete_links($slugs, $back),
+        default   => (function () use ($back) { flash('Choose an action.', 'err'); send_redirect($back); })(),
+    };
+}
+
+/* ------------------------------------------------------------------ settings */
+
+function page_settings(bool $post): void
+{
+    $error = '';
+    $lines = [];
+    foreach (retire_targets() as $t) {
+        $lines[] = $t['name'] . ' | ' . $t['url'];
+    }
+    $text = implode("\n", $lines);
+
+    if ($post) {
+        $text = (string) ($_POST['targets'] ?? '');
+        $list = [];
+        foreach (preg_split('/\R/', $text) as $i => $line) {
+            if (trim($line) === '') {
+                continue;
+            }
+            [$name, $u] = array_map('trim', array_pad(explode('|', $line, 2), 2, ''));
+            if ($name === '' || !valid_destination($u) || $u === '') {
+                $error = 'Line ' . ($i + 1) . ' needs "Name | https://address".';
+                break;
+            }
+            $list[] = ['name' => $name, 'url' => $u];
+        }
+        if (!$error && !$list) {
+            $error = 'Keep at least one retire destination.';
+        }
+        if (!$error) {
+            set_setting('retire_targets', json_encode($list, JSON_UNESCAPED_SLASHES));
+            flash('Retire destinations saved.');
+            send_redirect(url('/admin/settings'));
+        }
+    }
+
+    layout('Settings', '<section class="card narrow">
+      <h1>Settings</h1>
+      <h2>Retire destinations</h2>
+      <p class="muted">The sites a retired tag can send scans to. One per line: <code>Name | https://address</code>. Already-retired tags keep the address they were given.</p>
+      ' . ($error ? '<div class="flash err">' . h($error) . '</div>' : '') . '
+      <form method="post">' . csrf_field() . '
+        <label>Destinations <textarea name="targets" rows="5" spellcheck="false">' . h($text) . '</textarea></label>
+        <div class="actions"><button class="primary">Save</button></div>
+      </form>
+      <h2 style="margin-top:24px">Account</h2>
+      <p><a href="' . h(url('/admin/password')) . '">Change password</a></p>
+    </section>');
 }
 
 /* ------------------------------------------------------------------ export */
@@ -793,7 +1000,7 @@ function export_csv(): never
         exit;
     }
 
-    fputcsv($out, ['tag', 'client', 'label', 'destination', 'active', 'scans', 'nfc', 'qr', 'ios', 'android', 'unique_visitor_days', 'last_scan_local']);
+    fputcsv($out, ['tag', 'client', 'label', 'destination', 'status', 'scans', 'nfc', 'qr', 'ios', 'android', 'unique_visitor_days', 'last_scan_local']);
     $totals = scan_totals($since);
     $slugs = array_unique(array_merge(array_keys($links), array_keys($totals)));
     natsort($slugs);
@@ -804,7 +1011,7 @@ function export_csv(): never
             continue;
         }
         fputcsv($out, [
-            $slug, $l['client'] ?? '', $l['title'] ?? '(unknown tag)', $l['url'] ?? '', $l ? ((int) $l['active'] ? 'yes' : 'no') : '',
+            $slug, $l['client'] ?? '', $l['title'] ?? '(unknown tag)', $l ? (is_retired($l) ? $l['retire_to'] : $l['url']) : '', link_status($l),
             (int) ($t['total'] ?? 0), (int) ($t['nfc'] ?? 0), (int) ($t['qr'] ?? 0), (int) ($t['ios'] ?? 0), (int) ($t['android'] ?? 0),
             (int) ($t['uniq'] ?? 0), isset($t['last']) ? local_time((int) $t['last'], 'Y-m-d H:i') : '',
         ]);

@@ -83,6 +83,44 @@
     });
   });
 
+  /* ---------------------------------------------------------------- bulk actions on Links */
+
+  var bulk = document.querySelector('form[data-bulk]');
+  if (bulk) {
+    var boxes = Array.prototype.slice.call(document.querySelectorAll('input[name="slugs[]"][form="bulk-form"]'));
+    var all = bulk.querySelector('[data-select-all]');
+    var count = bulk.querySelector('[data-selected-count]');
+    var action = bulk.querySelector('select[name="action"]');
+    var target = bulk.querySelector('[data-retire-target]');
+    var picked = function () { return boxes.filter(function (b) { return b.checked; }); };
+    var refresh = function () {
+      var n = picked().length;
+      count.textContent = n + ' selected';
+      all.checked = n > 0 && n === boxes.length;
+      all.indeterminate = n > 0 && n < boxes.length;
+      bulk.classList.toggle('has-selection', n > 0);
+    };
+    boxes.forEach(function (b) { b.addEventListener('change', refresh); });
+    all.addEventListener('change', function () {
+      boxes.forEach(function (b) { b.checked = all.checked; });
+      refresh();
+    });
+    action.addEventListener('change', function () { target.hidden = action.value !== 'retire'; });
+    bulk.addEventListener('submit', function (e) {
+      var sel = picked();
+      if (!sel.length) { e.preventDefault(); window.alert('Select at least one link first.'); return; }
+      var names = sel.map(function (b) { return b.value; });
+      var list = names.length > 8 ? names.slice(0, 8).join(', ') + ' and ' + (names.length - 8) + ' more' : names.join(', ');
+      var msg = {
+        retire: 'Retire ' + list + '? Scans will go to ' + (target.options[target.selectedIndex] || {}).text + '.',
+        restore: 'Restore ' + list + ' from retired?',
+        'delete': 'PERMANENTLY delete ' + list + ' and all their scan history? This cannot be undone.'
+      }[action.value];
+      if (msg && !window.confirm(msg)) e.preventDefault();
+    });
+    refresh();
+  }
+
   if (typeof qrcode !== 'function') return;
 
   /* ---------------------------------------------------------------- single link page */

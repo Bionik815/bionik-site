@@ -139,3 +139,17 @@ button[disabled] { opacity: .5; cursor: default; }
 .filters input[type=checkbox] { flex: none; }
 .filters .check.inline { white-space: nowrap; }
 .pill.warn { border-color: var(--qr); color: var(--warn-ink); background: var(--warn); }
+
+/* Retire, delete, bulk actions */
+.pill.retired { border-color: var(--muted); color: var(--muted); text-transform: uppercase; letter-spacing: .04em; font-size: .68rem; }
+th.pick, td.pick { width: 28px; padding-right: 0; }
+td.pick input { margin: 3px 0 0; }
+.viewbar { margin-bottom: 8px; }
+.bulkbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 8px 10px; margin-bottom: 8px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+.bulkbar [data-selected-count] { color: var(--muted); min-width: 6.5em; }
+.bulkbar.has-selection { border-color: var(--accent); }
+.bulkbar.has-selection [data-selected-count] { color: var(--ink); font-weight: 600; }
+.danger-btn { color: var(--err-ink); border-color: var(--err-ink); }
+.retired-card { border-color: var(--muted); }
+.row-inline input:not([type=checkbox]) { flex: 1 1 200px; }

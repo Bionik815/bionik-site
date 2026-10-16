@@ -15,6 +15,12 @@ function handle_redirect(string $slug, bool $isQr): never
         error_log('Bionik Links: ' . $e->getMessage());
     }
 
+    // Retired (lost tag, departed client): send scans to the chosen site of ours
+    if ($link && is_retired($link) && $link['retire_to'] !== '') {
+        send_redirect(add_utm(['url' => $link['retire_to'], 'utm' => 1, 'slug' => $link['slug'],
+                               'client' => 'retired'] , $isQr));
+    }
+
     if ($link && (int) $link['active'] === 1 && trim((string) $link['url']) !== '') {
         send_redirect(add_utm($link, $isQr));
     }

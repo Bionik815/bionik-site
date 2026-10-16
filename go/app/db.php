@@ -76,6 +76,35 @@ function migrate(PDO $pdo): void
             PRAGMA user_version = 1;
         ");
     }
+    if ($version < 2) {
+        // Retiring: a retired link keeps its history and old destination,
+        // but scans go to retire_to (one of your own sites) instead.
+        $pdo->exec("
+            ALTER TABLE links ADD COLUMN retired_at INTEGER;
+            ALTER TABLE links ADD COLUMN retire_to TEXT NOT NULL DEFAULT '';
+            ALTER TABLE links ADD COLUMN retire_note TEXT NOT NULL DEFAULT '';
+            PRAGMA user_version = 2;
+        ");
+    }
+}
+
+/** Sites a retired link can send scans to, as [['name' => …, 'url' => …], …]. */
+function retire_targets(): array
+{
+    $stored = setting('retire_targets');
+    $list = $stored !== null ? json_decode($stored, true) : null;
+    if (!is_array($list) || !$list) {
+        $list = [
+            ['name' => 'Bionik Web Designs', 'url' => 'https://bionikwebdesigns.com/'],
+            ['name' => 'Barebones Apparel', 'url' => 'https://barebones-apparel.com/'],
+        ];
+    }
+    return $list;
+}
+
+function is_retired(array $link): bool
+{
+    return !empty($link['retired_at']);
 }
 
 function setting(string $key): ?string
