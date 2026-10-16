@@ -386,7 +386,7 @@ function page_dashboard(): void
         $t = $totals[$l['slug']] ?? [];
         $rows .= '<tr' . ((int) $l['active'] ? '' : ' class="off"') . '>
           <td><a class="slug" href="' . h(url('/admin/link/' . $l['slug'])) . '">' . h($l['slug']) . '</a>' . ((int) $l['active'] ? '' : ' <span class="pill">off</span>') . '</td>
-          <td>' . h($l['title']) . '<div class="dest">' . h(short_url($l['url'])) . '</div></td>
+          <td>' . h($l['title']) . '<div class="dest">' . ($l['url'] !== '' ? h(short_url($l['url'])) : '<span class="pill warn">not set up</span>') . '</div></td>
           <td>' . h($l['client']) . '</td>
           <td class="n">' . (int) ($t['total'] ?? 0) . '</td>
           <td class="n">' . (int) ($t['nfc'] ?? 0) . '</td>
@@ -404,7 +404,7 @@ function page_dashboard(): void
         foreach ($unknown as $u) {
             $items .= '<li><code>' . h($u['slug']) . '</code> · ' . (int) $u['total'] . ' scans · last ' . h(local_time((int) $u['last'], 'M j g:i a')) . ' · <a href="' . h(url('/admin/new') . '?slug=' . rawurlencode($u['slug'])) . '">create link</a></li>';
         }
-        $unknownHtml = '<section class="card"><h2>Scans of unknown tags</h2><p class="muted">These tags were tapped but have no link, so visitors went to the main site.</p><ul class="plain">' . $items . '</ul></section>';
+        $unknownHtml = '<section class="card"><h2>Scans of unknown tags</h2><p class="muted">These tags were scanned but have no link, so visitors saw the "isn\'t registered" page with the tag number.</p><ul class="plain">' . $items . '</ul></section>';
     }
 
     $chart = chart_svg(daily_series($days, ($client !== '' || $search !== '') ? array_column($visible, 'slug') : null), 'Daily scans');
@@ -563,19 +563,19 @@ function page_link_detail(string $slug, ?array $link): void
 
     $info = $link ? '
         <dl class="facts">
-          <dt>Destination</dt><dd><a href="' . h($link['url']) . '" target="_blank" rel="noopener">' . h($link['url']) . '</a></dd>
+          <dt>Destination</dt><dd>' . ($link['url'] !== '' ? '<a href="' . h($link['url']) . '" target="_blank" rel="noopener">' . h($link['url']) . '</a>' : 'Not set up yet — scans show the tag number page') . '</dd>
           <dt>Client</dt><dd>' . h($link['client'] ?: '—') . '</dd>
-          <dt>Status</dt><dd>' . ((int) $link['active'] ? 'Active' : 'Off — scans go to the main site') . '</dd>
+          <dt>Status</dt><dd>' . ((int) $link['active'] ? 'Active' : 'Off — scans show a "turned off" page') . '</dd>
           <dt>UTM tags</dt><dd>' . ((int) $link['utm'] ? 'Added to the destination' : 'No') . '</dd>
           ' . ($link['notes'] !== '' ? '<dt>Notes</dt><dd>' . nl2br(h($link['notes'])) . '</dd>' : '') . '
           <dt>Created</dt><dd>' . h(local_time((int) $link['created_at'])) . '</dd>
         </dl>
         <div class="actions"><a class="button primary" href="' . h(url('/admin/link/' . $slug . '/edit')) . '">Edit link</a></div>'
-        : '<p class="flash warn">No link exists for this tag, so scans go to the main site. <a href="' . h(url('/admin/new') . '?slug=' . rawurlencode($slug)) . '">Create it</a>.</p>';
+        : '<p class="flash warn">No link exists for this tag, so scans show an "isn\'t registered" page. <a href="' . h(url('/admin/new') . '?slug=' . rawurlencode($slug)) . '">Create it</a>.</p>';
 
     $danger = '<section class="card danger"><h2>Maintenance</h2>
         <form method="post" action="' . h(url('/admin/link/' . $slug . '/clear')) . '" data-confirm="Delete all ' . $total . ' scans recorded for ' . h($slug) . '? This can\'t be undone.">' . csrf_field() . '<button>Clear scan history</button> <span class="muted">Use after testing a tag.</span></form>'
-        . ($link ? '<form method="post" action="' . h(url('/admin/link/' . $slug . '/delete')) . '" data-confirm="Delete link ' . h($slug) . '? Tags pointing here will go to the main site. Scan history is kept.">' . csrf_field() . '<button>Delete link</button> <span class="muted">Turning it off in Edit is usually better.</span></form>' : '')
+        . ($link ? '<form method="post" action="' . h(url('/admin/link/' . $slug . '/delete')) . '" data-confirm="Delete link ' . h($slug) . '? Tags pointing here will show an &quot;isn&#39;t registered&quot; page. Scan history is kept.">' . csrf_field() . '<button>Delete link</button> <span class="muted">Turning it off in Edit is usually better.</span></form>' : '')
         . '</section>';
 
     layout($slug, '
@@ -624,13 +624,16 @@ function link_input(?array $existing): array
 
 function valid_destination(string $url): bool
 {
+    if ($url === '') {
+        return true; // no destination yet: the tag shows its "not set up" page
+    }
     return (bool) filter_var($url, FILTER_VALIDATE_URL) && preg_match('#^https?://#i', $url);
 }
 
 function page_link_form(?array $link, bool $post): void
 {
     $editing = $link !== null;
-    $v = $link ?? ['slug' => strtolower((string) ($_GET['slug'] ?? '')), 'title' => '', 'url' => 'https://', 'client' => '', 'notes' => '', 'utm' => 0, 'active' => 1];
+    $v = $link ?? ['slug' => strtolower((string) ($_GET['slug'] ?? '')), 'title' => '', 'url' => '', 'client' => '', 'notes' => '', 'utm' => 0, 'active' => 1];
     $error = '';
 
     if ($post) {
@@ -643,7 +646,7 @@ function page_link_form(?array $link, bool $post): void
         } elseif (in_array($v['slug'], ['admin', 'assets', 'app'], true)) {
             $error = 'That tag ID is reserved.';
         } elseif (!valid_destination($v['url'])) {
-            $error = 'Destination must be a full http:// or https:// URL.';
+            $error = 'Destination must be a full http:// or https:// URL, or left blank.';
         } elseif (!$editing && find_link($v['slug'])) {
             $error = 'A link with that tag ID already exists.';
         } else {
@@ -677,7 +680,8 @@ function page_link_form(?array $link, bool $post): void
           <input name="slug" required pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,63}" value="' . h($v['slug']) . '"' . ($editing ? ' readonly' : ' placeholder="e.g. 001 or acme-ig"') . '>
           <small>' . ($editing ? 'Fixed, because it\'s written on the tag. Change the destination instead.' : 'Becomes ' . h(public_base()) . '/<em>tag-id</em>') . '</small>
         </label>
-        <label>Destination URL <input name="url" type="url" required value="' . h($v['url']) . '" placeholder="https://instagram.com/handle"></label>
+        <label>Destination URL <input name="url" type="url" value="' . h($v['url']) . '" placeholder="https://instagram.com/handle">
+          <small>Leave blank and the tag shows a "Tag ' . h($v['slug'] ?: '###') . ' isn\'t set up yet" page.</small></label>
         <label>Label <input name="title" value="' . h($v['title']) . '" placeholder="Booth table sticker"></label>
         <label>Client <input name="client" list="clients" value="' . h($v['client']) . '" placeholder="client-a">' . $dl . '</label>
         <label>Notes <textarea name="notes" rows="3">' . h($v['notes']) . '</textarea></label>
@@ -690,7 +694,7 @@ function page_link_form(?array $link, bool $post): void
 
 function page_bulk(bool $post): void
 {
-    $v = ['prefix' => '', 'from' => 1, 'to' => 50, 'pad' => 3, 'url' => 'https://bionikwebdesigns.com/', 'client' => '', 'title' => 'NFC tag {n}'];
+    $v = ['prefix' => '', 'from' => 1, 'to' => 50, 'pad' => 3, 'url' => '', 'client' => '', 'title' => 'NFC tag {n}'];
     $error = '';
     if ($post) {
         $v = [
@@ -707,7 +711,7 @@ function page_bulk(bool $post): void
         } elseif ($v['prefix'] !== '' && !preg_match('/^[a-z0-9][a-z0-9_-]{0,40}$/', $v['prefix'])) {
             $error = 'Prefix: letters, numbers, - or _.';
         } elseif (!valid_destination($v['url'])) {
-            $error = 'Destination must be a full http:// or https:// URL.';
+            $error = 'Destination must be a full http:// or https:// URL, or left blank.';
         } else {
             $made = 0; $skipped = 0; $now = time();
             $ins = db()->prepare('INSERT OR IGNORE INTO links (slug, title, url, client, notes, utm, active, created_at, updated_at) VALUES (?,?,?,?,?,0,1,?,?)');
@@ -719,14 +723,14 @@ function page_bulk(bool $post): void
                 $ins->rowCount() ? $made++ : $skipped++;
             }
             db()->commit();
-            flash("Created $made links" . ($skipped ? ", skipped $skipped that already existed" : '') . '. Edit each one to set its destination.');
+            flash("Created $made links" . ($skipped ? ", skipped $skipped that already existed" : '') . '. Until you set a destination, each one shows its tag number when scanned.');
             send_redirect(url('/admin'));
         }
     }
     $sample = h($v['prefix'] . str_pad((string) $v['from'], $v['pad'], '0', STR_PAD_LEFT));
     layout('Bulk create', '<section class="card narrow">
       <h1>Bulk create links</h1>
-      <p class="muted">Makes a numbered run of links, all pointing at one placeholder destination. Write the tags now and set each destination later.</p>
+      <p class="muted">Makes a numbered run of links. Write the tags now and set each destination later; until then, scanning a tag shows a page with its number.</p>
       ' . ($error ? '<div class="flash err">' . h($error) . '</div>' : '') . '
       <form method="post">' . csrf_field() . '
         <div class="row">
@@ -736,7 +740,7 @@ function page_bulk(bool $post): void
           <label>Digits <input name="pad" type="number" min="0" max="6" value="' . (int) $v['pad'] . '"></label>
         </div>
         <small>First tag ID: <code>' . $sample . '</code>. Existing IDs are skipped.</small>
-        <label>Placeholder destination <input name="url" type="url" required value="' . h($v['url']) . '"></label>
+        <label>Destination (optional) <input name="url" type="url" value="' . h($v['url']) . '" placeholder="Leave blank to set each one later"></label>
         <label>Label <input name="title" value="' . h($v['title']) . '"><small>{n} becomes the number.</small></label>
         <label>Client <input name="client" value="' . h($v['client']) . '"></label>
         <div class="actions"><button class="primary">Create links</button></div>

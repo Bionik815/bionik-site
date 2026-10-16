@@ -138,3 +138,4 @@ button[disabled] { opacity: .5; cursor: default; }
 }
 .filters input[type=checkbox] { flex: none; }
 .filters .check.inline { white-space: nowrap; }
+.pill.warn { border-color: var(--qr); color: var(--warn-ink); background: var(--warn); }
